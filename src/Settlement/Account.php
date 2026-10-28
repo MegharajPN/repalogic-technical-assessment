@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Repalogic\Settlement;
 
-class Account
+use InvalidArgumentException;
+
+final class Account
 {
     public const TIER_STANDARD = 'Standard';
     public const TIER_VIP      = 'VIP';
@@ -17,6 +19,8 @@ class Account
     /** @var int[] Timestamps (in ms) of successful deductions */
     private array $deductionTimestamps = [];
 
+    private ?int $lastTransactionTimestampMs = null;
+
     private bool $overdraftRevoked = false;
 
     public function __construct(
@@ -25,9 +29,29 @@ class Account
         float $initialBalance = 0.0,
         string $tier = self::TIER_STANDARD
     ) {
+        if (trim($accountId) === '') {
+            throw new InvalidArgumentException("Account ID cannot be empty.");
+        }
+
+        if (trim($baseCurrency) === '') {
+            throw new InvalidArgumentException("Base currency cannot be empty.");
+        }
+
+        if (!in_array($tier, [self::TIER_STANDARD, self::TIER_VIP], true)) {
+            throw new InvalidArgumentException("Invalid account tier: {$tier}");
+        }
+
+        if (!is_finite($initialBalance)) {
+            throw new InvalidArgumentException("Initial balance must be a finite number.");
+        }
+
+        if ($tier === self::TIER_STANDARD && $initialBalance < 0.0) {
+            throw new InvalidArgumentException("Standard accounts cannot be initialized with a negative balance.");
+        }
+
         $this->accountId    = $accountId;
-        $this->baseCurrency = $baseCurrency;
-        $this->balance      = $initialBalance;
+        $this->baseCurrency = strtoupper(trim($baseCurrency));
+        $this->balance      = round($initialBalance, 4);
         $this->tier         = $tier;
     }
 
@@ -48,6 +72,9 @@ class Account
 
     public function setBalance(float $balance): void
     {
+        if (!is_finite($balance)) {
+            throw new InvalidArgumentException("Balance must be a finite number.");
+        }
         $this->balance = round($balance, 4);
     }
 
@@ -71,14 +98,21 @@ class Account
         $this->overdraftRevoked = true;
     }
 
-    public function recordDeductionTimestamp(int $timestampMs): void
+    public function getLastTransactionTimestampMs(): ?int
     {
-        $this->deductionTimestamps[] = $timestampMs;
+        return $this->lastTransactionTimestampMs;
+    }
+
+    public function recordTransactionTimestamp(int $timestampMs, bool $isDeduction): void
+    {
+        $this->lastTransactionTimestampMs = $timestampMs;
+        if ($isDeduction) {
+            $this->deductionTimestamps[] = $timestampMs;
+        }
     }
 
     /**
-     * Counts how many deductions occurred within the 60-second (60,000 ms) rolling window
-     * up to and including the current transaction timestamp.
+     * Counts how many deductions occurred within the 60-second (60,000 ms) rolling window[cite: 2, 3].
      */
     public function getDeductionCountInWindow(int $currentTimestampMs, int $windowMs = 60000): int
     {
@@ -95,28 +129,30 @@ class Account
     }
 
     /**
-     * Captures the internal state of this account instance for atomic rollback.
+     * Captures the internal state of this account instance for atomic rollback[cite: 4].
      *
-     * @return array{balance: float, deductionTimestamps: int[], overdraftRevoked: bool}
+     * @return array{balance: float, deductionTimestamps: int[], lastTransactionTimestampMs: ?int, overdraftRevoked: bool}
      */
     public function createSnapshot(): array
     {
         return [
-            'balance'             => $this->balance,
-            'deductionTimestamps' => $this->deductionTimestamps,
-            'overdraftRevoked'    => $this->overdraftRevoked,
+            'balance'                    => $this->balance,
+            'deductionTimestamps'        => $this->deductionTimestamps,
+            'lastTransactionTimestampMs' => $this->lastTransactionTimestampMs,
+            'overdraftRevoked'           => $this->overdraftRevoked,
         ];
     }
 
     /**
-     * Restores the internal state in-place on the same object reference.
+     * Restores the internal state in-place on the same object reference[cite: 4].
      *
-     * @param array{balance: float, deductionTimestamps: int[], overdraftRevoked: bool} $snapshot
+     * @param array{balance: float, deductionTimestamps: int[], lastTransactionTimestampMs: ?int, overdraftRevoked: bool} $snapshot
      */
     public function restoreSnapshot(array $snapshot): void
     {
-        $this->balance             = $snapshot['balance'];
-        $this->deductionTimestamps = $snapshot['deductionTimestamps'];
-        $this->overdraftRevoked    = $snapshot['overdraftRevoked'];
+        $this->balance                    = $snapshot['balance'];
+        $this->deductionTimestamps        = $snapshot['deductionTimestamps'];
+        $this->lastTransactionTimestampMs = $snapshot['lastTransactionTimestampMs'];
+        $this->overdraftRevoked           = $snapshot['overdraftRevoked'];
     }
 }
