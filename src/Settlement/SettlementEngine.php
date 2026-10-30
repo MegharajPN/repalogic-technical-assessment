@@ -316,8 +316,5 @@ final class SettlementEngine
             unset($this->trippedVendors[$vendorId]);
 
         }
-        // if () {
-        //     unset($this->trippedVendors[$vendorId]);
-        // }
     }
 }
